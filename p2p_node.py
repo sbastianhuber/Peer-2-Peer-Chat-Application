@@ -16,21 +16,27 @@ Architecture Overview:
 - UDP broadcasts enable decentralized peer discovery
 - TCP connections provide reliable ring communication
 - Leader election occurs automatically when topology changes or leader fails
+- Progamm = Peer (Node) in einem Ring, findet andere über UDP Broadcast Hallo u. baut daraus einen logischen Ring (Nachbar) 
+- Hält TCP Verbindung zum rechten Nachbarn, leitet Chat im Ring weiter
+- Bei Änderungen: Leader Ausfall, dann Leader Wahl nach LCR
+- Endlosschleifen werden mit msg_id+seen verhindert
 """
 
-import socket 
-import threading
-import time
-import json
-import uuid
-import sys
+import socket #Netzwerk (UDP+TCP) --> Discovery + Ring = Kommunikation        
+import threading  #mehrere Dinge passieren parallel (Listener, Broadcast, Server...)
+import time #Zeitstempel wie last_seen
+import json #Nachrichtenformat (Hello..)
+import uuid #eindeutige ID für Nodes u. Nachrichten ID
+import sys #Programm beenden
 import logging
 import signal
-from collections import deque # TEST 
+from collections import deque #Ringpuffer für zuletzt gesehene Nachrichten
+
+
 
 # --- CONFIGURATION ---
-BROADCAST_PORT = 50000        
-TCP_PORT = 6000               
+BROADCAST_PORT = 50000      #alle hören mit   
+TCP_PORT = 6000             #Ring Verbindung       
 CHECK_INTERVAL = 1 #Check every second for dead peers        
 PEER_TIMEOUT = 4  # A peer is considered dead if no heartbeat in 4 seconds            
 BUF_SIZE = 4096 # 4KB buffer size 
