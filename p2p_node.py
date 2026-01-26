@@ -352,16 +352,16 @@ class P2PNode:
                     if now - info['last_seen'] > PEER_TIMEOUT]
 
             for pid in dead:
-                logger.warning(f"Peer {pid} detected dead (Timeout).")
+                logger.warning(f"Peer {pid} detected dead (Timeout).") #ist 'dead' weil seit 4s kein UDP-Hello
                 del self.state.peers[pid]
 
-                # Special case: if the leader died, trigger election
+                # Special case: if the leader died, trigger election #hier passiert eine neue Wahl, wenn der Leader wegfällt
                 if self.state.leader_id == pid:
                     logger.critical(f"LEADER {pid} FAILED! Initiating Election.")
                     self.state.leader_id = None
                     self.state.participating = False
                     # Start election in separate thread to avoid blocking
-                    threading.Thread(target=self._start_election, daemon=True).start()
+                    threading.Thread(target=self._start_election, daemon=True).start() #Wahl im extra Thread, damit maintenance nicht blockiert: heartbeat zwar gesendet ausfall detection ist hier primär udp last_seen
 
     def _stabilize_ring(self):
         """
@@ -379,13 +379,13 @@ class P2PNode:
         """
         # Build sorted list of all node IDs (atomic snapshot with lock)
         with self.state.lock:
-            all_ids = sorted([self.id] + list(self.state.peers.keys()))
+            all_ids = sorted([self.id] + list(self.state.peers.keys())) #alle IDs nehmen und sortieren
 
-        # Calculate our right neighbor using ring logic
+        # Calculate our right neighbor using ring logic #nächste ID-Liste
         my_idx = all_ids.index(self.id)
         successor_id = all_ids[(my_idx + 1) % len(all_ids)]  # Modulo for wrap-around
 
-        # Case 1: We're isolated (only node in the network)
+        # Case 1: We're isolated (only node in the network) allein, kein anderer da
         if successor_id == self.id:
             if self.right_neighbor_socket:
                 logger.info("Network isolation detected. Closing connections.")
@@ -397,21 +397,21 @@ class P2PNode:
             if successor_id not in self.state.peers: return  # Race condition: peer just removed
             target = self.state.peers[successor_id]
 
-        # Case 2: Topology changed - our successor is different now
+        # Case 2: Topology changed - our successor is different now #Nachbar hat sich geändert, wenn join/leave ändert sich successor, dann verbinden wir neu und staren wahl?
         if self.right_neighbor_info and self.right_neighbor_info[0] != successor_id:
             logger.info(f"Topology Change: Switching to {successor_id}")
             self._connect_to_neighbor(successor_id, target['ip'], target['port'])
             self.state.participating = False
             self._start_election()  # Topology change triggers election
 
-        # Case 3: No current connection - establish initial link
+        # Case 3: No current connection - establish initial link 
         elif self.right_neighbor_socket is None:
             logger.info(f"Connecting to right neighbor: {successor_id}")
             self._connect_to_neighbor(successor_id, target['ip'], target['port'])
             self.state.participating = False
             self._start_election()  # New connection triggers election
 
-        # Case 4: Normal operation - connection stable, send heartbeat
+        # Case 4: Normal operation - connection stable, send heartbeat #Normalbetrieb
         else:
             try:
                 self._send_json({"type": "HEARTBEAT", "msg_id": str(uuid.uuid4())})
@@ -419,7 +419,7 @@ class P2PNode:
                 # Connection lost - will reconnect on next stabilize cycle
                 self._close_right_neighbor()
 
-    def _connect_to_neighbor(self, pid, ip, port):
+    def _connect_to_neighbor(self, pid, ip, port): #schließt alle Verbindungen
         """
         Establish TCP connection to our right neighbor in the ring.
 
@@ -473,15 +473,15 @@ class P2PNode:
         Raises:
             OSError: If the send fails (connection lost)
         """
-        if not self.right_neighbor_socket: return  # No connection
+        if not self.right_neighbor_socket: return  # No connection 
 
         try:
             data = json.dumps(msg) + "\n"  # Line-delimited JSON
-            self.right_neighbor_socket.sendall(data.encode('utf-8'))
+            self.right_neighbor_socket.sendall(data.encode('utf-8')) #garantiert, dass alles rausgeht bzw. fehler wirft
         except OSError:
             raise  # Propagate error to caller for handling
 
-    # --- MESSAGE PROCESSING (FIXED) ---
+    # --- MESSAGE PROCESSING (FIXED) --- #ab hier beginnt Chat, Election, Coordinator, quasi Nachrichtenzentrale
     def _process_message(self, msg):
         """
         Process incoming messages from ring neighbors.
@@ -510,7 +510,7 @@ class P2PNode:
         # that node has won the election. We must detect this BEFORE marking
         # the message as seen, otherwise we'd incorrectly drop it as duplicate.
         if mtype == 'ELECTION' and str(msg.get('candidate_id')) == str(self.id):
-            logger.info(">>> ELECTION WON! I am the new Coordinator. <<<")
+            logger.info(">>> ELECTION WON! I am the new Coordinator. <<<") #wenn eigene Election wieder bei mir ankommt, niemand größer war, gewonnen. 
             self.state.leader_id = self.id
             self.state.participating = False
             self._announce_coordinator()
@@ -520,7 +520,7 @@ class P2PNode:
         # Messages circulate around the ring. To prevent infinite loops,
         # we track recently seen message IDs in a circular buffer.
         with self.state.lock:
-            if msg_id in self.state.seen_messages:
+            if msg_id in self.state.seen_messages: #verhindert, dass die Nachricht endlos laufen/verarbeitet wird. Ring kann sonst spamen, weil alles im Kreis läuft
                 return  # Already processed this message, drop it
             self.state.seen_messages.append(msg_id)
 
@@ -533,7 +533,7 @@ class P2PNode:
             # Display chat message
             print(f"\r[CHAT] {msg['sender']}: {msg['text']}\n> ", end="")
 
-            # Forward to next node unless we're the origin (message completed circuit)
+            # Forward to next node unless we're the origin (message completed circuit) #jede Nachricht läuft einmal im Ring & origin stoppt Weiterleitung, wenn Nachricht zurückkommt
             if msg['origin_id'] != self.id:
                 self._forward(msg)
 
@@ -542,21 +542,21 @@ class P2PNode:
             candidate_val = msg['candidate_val']
 
             if candidate_val > self.id_int:
-                # Candidate has higher ID - they're stronger, forward their message
+                # Candidate has higher ID - they're stronger, forward their message #Nachricht wird weitergegeben, wenn Kandidat stärker
                 self.state.participating = True
                 self._forward(msg)
 
             elif candidate_val < self.id_int:
-                # Candidate has lower ID - we're stronger, replace with our ID
+                # Candidate has lower ID - we're stronger, replace with our ID #Kandidat schwächer, dann übertreffe ich ihn
                 # This is the core of LCR: suppress weaker candidates
                 self._start_election()
 
-            # Note: equality case (victory) was already handled in Phase 1
+            # Note: equality case (victory) was already handled in Phase 1 #so setzt sich die höchste ID durch
 
         elif mtype == 'COORDINATOR':
             # New leader announcement
-            leader = msg['leader_id']
-            self.state.leader_id = leader
+            leader = msg['leader_id'] #so erfahren alles Nodes, wer der Leader ist
+            self.state.leader_id = leader #Leader ID wird gespeichert
             self.state.participating = False
 
             if leader != self.id:
@@ -603,7 +603,7 @@ class P2PNode:
 
             # Generate unique message ID and pre-add to seen list
             # This prevents re-processing if the message returns (victory case)
-            e_msg_id = str(uuid.uuid4())
+            e_msg_id = str(uuid.uuid4()) #erzeugt neue Election Messafe mit meiner ID & seen_message, damit es nicht doppelt verarbeitet wird
             with self.state.lock:
                 self.state.seen_messages.append(e_msg_id)
 
@@ -615,7 +615,7 @@ class P2PNode:
                 "msg_id": e_msg_id
             })
 
-    def _announce_coordinator(self):
+    def _announce_coordinator(self): #schickt Coordinator einmal um den Ring
         """
         Announce ourselves as the new leader to all nodes in the ring.
 
