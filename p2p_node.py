@@ -41,7 +41,7 @@ CHECK_INTERVAL = 1 #Check every second for dead peers
 PEER_TIMEOUT = 4  # A peer is considered dead if no heartbeat in 4 seconds            
 BUF_SIZE = 4096 # 4KB buffer size 
 
-# Logging Configuration
+# Logging Configuration #dieser Bereich ist nur für Zeit + Level, hilft auch beim debuggen
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -54,12 +54,12 @@ class NodeState:
     Thread-safe container for node state shared across multiple threads.
 
     Attributes:
-        lock: Threading lock for synchronizing access to shared state
-        peers: Dict mapping peer IDs to their info {id: {'ip', 'port', 'last_seen'}}
+        lock: Threading lock for synchronizing access to shared state; verhindert, dass Thr. gleichzeitig am gleichen arbeiten
+        peers: Dict mapping peer IDs to their info {id: {'ip', 'port', 'last_seen'}} #Peer-Liste
         leader_id: Current coordinator's ID, None if no leader elected yet
         running: Flag to control main event loops across all threads
-        participating: True when this node is actively in an election process
-        seen_messages: Circular buffer (deque) storing recent message IDs for deduplication
+        participating: True when this node is actively in an election process, 'ich bin gerade in einer Wahl'
+        seen_messages: Circular buffer (deque) storing recent message IDs for deduplication, damit die Nachricht nicht endlos läuft
     """
     def __init__(self):
         self.lock = threading.Lock()
@@ -67,7 +67,7 @@ class NodeState:
         self.leader_id = None # Current coordinator ID
         self.running = True # Global running flag for all threads
         self.participating = False # LCR election participation flag
-        self.seen_messages = deque(maxlen=200)  # Stores last 200 message IDs 
+        self.seen_messages = deque(maxlen=200)  # Stores last 200 message IDs #die Zahl ist genug für laufende Nachrichten, aber nicht unendlich groß
 
 class P2PNode:
     """
@@ -93,8 +93,8 @@ class P2PNode:
         # Generate unique node ID using UUID4
         # We maintain two forms: full string for messages, integer for election logic
         _uuid = uuid.uuid4()
-        self.id = str(_uuid)  # Full UUID string for identification
-        self.id_int = _uuid.int  # Integer UUID for LCR comparison (ensures total ordering)
+        self.id = str(_uuid)  # Full UUID string for identification, jeder NODE würfelt eine einzigartige ID
+        self.id_int = _uuid.int  # Integer UUID for LCR comparison (ensures total ordering) #Node mit größter ID gewinnt
 
         self.name = name
         self.port = int(port)
@@ -109,7 +109,7 @@ class P2PNode:
         self.state = NodeState()  # Thread-safe shared state
 
         # Network sockets (initialized later)
-        self.udp_sock = None  # For broadcast discovery
+        self.udp_sock = None  # For broadcast discovery, also alles was im selben Netzwerk ist z.B. 255.255.255
         self.tcp_server = None  # For accepting connections
         self.right_neighbor_socket = None  # Connection to next node in ring
         self.right_neighbor_info = None  # (peer_id, ip, port) tuple
@@ -123,6 +123,9 @@ class P2PNode:
         Uses a clever trick: create a UDP socket and "connect" to a remote address
         (8.8.8.8, Google DNS). This doesn't send any packets but causes the OS
         to determine which local interface would be used, revealing our local IP.
+        Mit der ID finde ich heraus 'wer bist du?', IP+Port sagt wie erreiche ich dich technisch?
+        Broadcast ruft in die Runde: ich bin da. 
+        Das drunter mit 8x4 ist keine echte Verbindung, so finde ich nur die eigene LAN-IP
 
         Returns:
             str: Local IP address (e.g., '192.168.1.5') or '127.0.0.1' on failure
@@ -155,10 +158,10 @@ class P2PNode:
         signal.signal(signal.SIGTERM, self.stop) # regular stop through OS
 
         # Start all background services
-        self._start_udp_listener()  # Discover other peers
-        self._start_udp_broadcaster()  # Announce ourselves
-        self._start_tcp_server()  # Accept ring connections
-        threading.Thread(target=self._ring_maintenance_loop, daemon=True).start()
+        self._start_udp_listener()  # Discover other peers, hört das Hello
+        self._start_udp_broadcaster()  # Announce ourselves, sendet Hello
+        self._start_tcp_server()  # Accept ring connections, nimmt die Verbindung an
+        threading.Thread(target=self._ring_maintenance_loop, daemon=True).start() #cleanup
 
         # Enter main loop (blocks until shutdown)
         self._input_loop()
@@ -179,10 +182,10 @@ class P2PNode:
 
         # Close all sockets
         if self.udp_sock: self.udp_sock.close()
-        if self.tcp_server: self.tcp_server.close()
+        if self.tcp_server: self.tcp_server.close() #schließt udp & tpc aber warum?
         if self.right_neighbor_socket: self.right_neighbor_socket.close()
 
-        sys.exit(0)
+        sys.exit(0) #beendet  Programm
 
     # --- DISCOVERY ---
     def _start_udp_listener(self):
@@ -197,15 +200,16 @@ class P2PNode:
         The listener runs in a daemon thread until self.state.running becomes False.
         """
         # Create UDP socket with broadcast capability
-        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # create udp socket with AF_INET: Adress family IPv4 and SOCK_DGRAM: Datagram Socket UDP
-        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1) # SOL_SOCKET --> general socket settings. SO_BROADCAST: 1 Activate broadcast Socket option
-        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow Port address reuse
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # create udp socket with AF_INET: Adress family IPv4 and SOCK_DGRAM: Datagram Socket UDP #UDP-Briefkasten, hier können wir UDP-Nachrichten empfangen
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1) # SOL_SOCKET --> general socket settings. SO_BROADCAST: 1 Activate broadcast Socket option #also alle in diesem lokalen Netzwerk
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow Port address reuse #dient als Hilfe, damit wir nach Neustart nicht ewig warten müssen bis Port frei wird
+        
 
         try:
-            self.udp_sock.bind(('', BROADCAST_PORT)) # Enable listening on all interfaces on BROADCAST_PORT  '' ==  0.0.0.0 --> all Interfaces (Wlan, VPN, Lan, ...) 
+            self.udp_sock.bind(('', BROADCAST_PORT)) # Enable listening on all interfaces on BROADCAST_PORT  '' ==  0.0.0.0 --> all Interfaces (Wlan, VPN, Lan, ...) #ich will hier empfangen, also in allen Netwerkschnittstellen siehe Klammer
         except OSError as e:
             logger.error(f"UDP Port {BROADCAST_PORT} occupied: {e}")
-            sys.exit(1)
+            sys.exit(1) #Programm beendet sich, wenn anderes Programm den Port nutzt
 
         def listen():
             """Inner function: continuously receive and process HELLO messages."""
@@ -221,7 +225,7 @@ class P2PNode:
                             self.state.peers[msg['id']] = {
                                 'ip': msg['ip'],
                                 'port': msg['port'],
-                                'last_seen': time.time()  # Local timestamp for timeout detection
+                                'last_seen': time.time()  # Local timestamp for timeout detection #wenn zu alt, peer weg
                             }
                 except Exception:
                     pass  # Ignore malformed messages
@@ -243,7 +247,7 @@ class P2PNode:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # create udp socket with AF_INET: Adress family IPv4 and SOCK_DGRAM: Datagram Socket UDP
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1) # SOL_SOCKET --> general socket settings. SO_BROADCAST: 1 Activate broadcast Socket option
 
-            while self.state.running:
+            while self.state.running:#Kernstelle, jede sek wird 'ich bin da versendet', so erreichst du mich per TCP
                 # Prepare HELLO message with our contact info
                 msg = {"type": "HELLO", "id": self.id, "ip": self.ip, "port": self.port} # TCP Port for Ring Connections
                 try:
@@ -257,7 +261,7 @@ class P2PNode:
         threading.Thread(target=broadcast, daemon=True).start() # Start a daemon thread that periodically broadcasts our HELLO message in the background
 
     # --- TCP & RING ---
-    def _start_tcp_server(self):
+    def _start_tcp_server(self): #beginn
         """
         Start TCP server to accept connections from our left neighbor in the ring.
 
@@ -302,7 +306,7 @@ class P2PNode:
         f = sock.makefile('r', encoding='utf-8')  # Line-buffered text stream. Every JSON Message is delimited by newline. data = json.dumps(msg) + "\n" 
 
         try:
-            # Read messages line by line
+            # Read messages line by line #TCP-Protokoll ist JSON pro Zeile, jede Zeile = eine Nachricht
             for line in f: #file
                 if not line: break  # Connection closed # End of File. 
 
@@ -316,7 +320,7 @@ class P2PNode:
         finally:
             sock.close()
 
-    def _ring_maintenance_loop(self):
+    def _ring_maintenance_loop(self): #ab hier will ich wissen, wer ist tot? & ist mein Ring - Nachbar noch korrekt? Es kontrolliert und überwacht Syteme
         """
         Background maintenance loop for ring health and stability.
 
